@@ -1,0 +1,5 @@
+.env
+.gemini.json
+.DS_Store
+path/
+__pycache__/
