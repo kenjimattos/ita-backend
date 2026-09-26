@@ -53,7 +53,8 @@ jobs:
             --region="$REGION" \
             --allow-unauthenticated \
             --max-instances=5 \
-            --set-env-vars=TABLE_NAME="$TABLE_NAME"
+            --set-secrets=/secrets/gcp/credentials.json=ita-backend-gcp-credentials:latest \
+            --set-env-vars=TABLE_NAME="$TABLE_NAME",GOOGLE_CLOUD_PROJECT="$PROJECT_ID",GOOGLE_APPLICATION_CREDENTIALS=/secrets/gcp/credentials.json
 
       - name: Remover token
         if: always()
