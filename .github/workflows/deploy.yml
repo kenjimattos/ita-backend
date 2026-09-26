@@ -1,0 +1,60 @@
+name: Deploy ita-backend
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Evita dois deploys simultâneos; o mais novo espera o anterior terminar
+concurrency:
+  group: deploy-ita-backend
+  cancel-in-progress: false
+
+env:
+  PROJECT_ID: batalha-time-01-97zr
+  REGION: us-central1
+  SERVICE: ita-backend
+  IMAGE: us-central1-docker.pkg.dev/batalha-time-01-97zr/agentes/ita-backend
+  TABLE_NAME: batalha-time-01-97zr.hackathon_dados.extrato_sintetico
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      # O secret GCP_CREDENTIALS é um authorized_user (credencial de usuário).
+      # Troca o refresh token por um access token de 1h e entrega ao gcloud.
+      - name: Autenticar no Google Cloud
+        env:
+          GCP_CREDENTIALS: ${{ secrets.GCP_CREDENTIALS }}
+        run: |
+          TOKEN=$(curl -sf https://oauth2.googleapis.com/token \
+            --data-urlencode "client_id=$(jq -r .client_id <<< "$GCP_CREDENTIALS")" \
+            --data-urlencode "client_secret=$(jq -r .client_secret <<< "$GCP_CREDENTIALS")" \
+            --data-urlencode "refresh_token=$(jq -r .refresh_token <<< "$GCP_CREDENTIALS")" \
+            -d grant_type=refresh_token | jq -r .access_token)
+          echo "::add-mask::$TOKEN"
+          echo "$TOKEN" > "$RUNNER_TEMP/gcp-token"
+          echo "CLOUDSDK_AUTH_ACCESS_TOKEN_FILE=$RUNNER_TEMP/gcp-token" >> "$GITHUB_ENV"
+          echo "CLOUDSDK_CORE_PROJECT=$PROJECT_ID" >> "$GITHUB_ENV"
+
+      - name: Build da imagem (Cloud Build)
+        run: gcloud builds submit --tag="$IMAGE:$GITHUB_SHA"
+
+      - name: Deploy no Cloud Run
+        run: |
+          gcloud run deploy "$SERVICE" \
+            --image="$IMAGE:$GITHUB_SHA" \
+            --region="$REGION" \
+            --allow-unauthenticated \
+            --max-instances=5 \
+            --set-env-vars=TABLE_NAME="$TABLE_NAME"
+
+      - name: Remover token
+        if: always()
+        run: rm -f "$RUNNER_TEMP/gcp-token"
