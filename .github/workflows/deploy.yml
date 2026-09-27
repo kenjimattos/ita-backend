@@ -16,6 +16,8 @@ env:
   SERVICE: ita-backend
   IMAGE: us-central1-docker.pkg.dev/batalha-time-01-97zr/agentes/ita-backend
   TABLE_NAME: batalha-time-01-97zr.hackathon_dados.extrato_sintetico
+  # Identidade do serviço em execução (BigQuery, Vertex AI, Secret Manager)
+  RUNTIME_SA: squad-agent-sa@batalha-time-01-97zr.iam.gserviceaccount.com
 
 jobs:
   deploy:
@@ -53,8 +55,9 @@ jobs:
             --region="$REGION" \
             --allow-unauthenticated \
             --max-instances=5 \
-            --set-secrets=/secrets/gcp/credentials.json=ita-backend-gcp-credentials:latest \
-            --set-env-vars=TABLE_NAME="$TABLE_NAME",GOOGLE_CLOUD_PROJECT="$PROJECT_ID",GOOGLE_APPLICATION_CREDENTIALS=/secrets/gcp/credentials.json
+            --service-account="$RUNTIME_SA" \
+            --clear-secrets \
+            --set-env-vars=TABLE_NAME="$TABLE_NAME",GOOGLE_CLOUD_PROJECT="$PROJECT_ID"
 
       - name: Remover token
         if: always()
