@@ -108,7 +108,7 @@ O fluxo usa **duas identidades diferentes**:
 **Configuração inicial (uma vez por projeto), no console do GCP:**
 1. Habilite as APIs do Cloud Run, Cloud Build, Artifact Registry e Vertex AI.
 2. Crie o repositório Docker no Artifact Registry (região `us-central1`), com o nome do secret `GCP_AR_REPO`.
-3. Crie as contas de serviço `ita-deploy-sa` e `ita-runtime-sa`. A de runtime recebe *Agent Platform User* (Vertex AI User) no projeto. A de deploy recebe, no projeto, *Cloud Run Admin*, *Cloud Build Editor*, *Artifact Registry Writer*, *Storage Admin* e *Service Usage Consumer*, além de *Service Account User* na conta de runtime e na conta padrão do Compute.
+3. Crie as contas de serviço `ita-deploy-sa` e `ita-runtime-sa`. A de runtime recebe *Agent Platform User* (Vertex AI User) no projeto. A de deploy recebe, no projeto, *Cloud Run Admin*, *Cloud Build Editor*, *Artifact Registry Writer*, *Storage Admin*, *Service Usage Consumer* e *Viewer* (o `gcloud builds submit` precisa dele para acompanhar os logs do build), além de *Service Account User* na conta de runtime e na conta padrão do Compute.
 4. Crie o pool de identidade (`github`) e um provedor OIDC com issuer `https://token.actions.githubusercontent.com`, mapeamento `google.subject=assertion.sub` e `attribute.repository=assertion.repository`, e condição `assertion.repository=='<usuario>/ita-backend'`.
 5. Na `ita-deploy-sa`, conceda *Workload Identity User* ao principal `principalSet://iam.googleapis.com/projects/<PROJECT_NUMBER>/locations/global/workloadIdentityPools/github/attribute.repository/<usuario>/ita-backend`.
 6. Cadastre os secrets abaixo no environment `production`.
