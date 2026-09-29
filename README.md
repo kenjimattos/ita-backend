@@ -2,8 +2,8 @@
 
 Backend do **ITA**, assistente financeiro do time 01 no hackathon Itaú. É uma API em FastAPI que lê o extrato dos clientes no BigQuery e usa o Gemini (Vertex AI) para responder perguntas sobre esses dados. Roda no Cloud Run, e o deploy é automático a cada push na `main`.
 
-- **URL de produção:** https://ita-backend-540082622758.us-central1.run.app
-- **Documentação interativa (Swagger):** https://ita-backend-540082622758.us-central1.run.app/docs
+- **URL de produção:** https://ita-backend-<PROJECT_NUMBER>.us-central1.run.app
+- **Documentação interativa (Swagger):** https://ita-backend-<PROJECT_NUMBER>.us-central1.run.app/docs
 
 ---
 
@@ -13,7 +13,7 @@ Backend do **ITA**, assistente financeiro do time 01 no hackathon Itaú. É uma 
 Cliente / front
       │  HTTPS
       ▼
-Cloud Run: ita-backend  (FastAPI, roda como squad-agent-sa)
+Cloud Run: ita-backend  (FastAPI, roda como ita-runtime-sa)
       │                         │
       │ SQL parametrizado        │ generate_content
       ▼                         ▼
@@ -43,15 +43,15 @@ O agente não acessa o banco diretamente. O backend busca as transações com um
 1. **Autentique no Google Cloud.** As bibliotecas usam as *Application Default Credentials* (ADC), então nenhuma chave vai no código.
    ```bash
    gcloud auth login
-   gcloud config set project batalha-time-01-97zr
+   gcloud config set project <PROJECT_ID>
    gcloud auth application-default login
-   gcloud auth application-default set-quota-project batalha-time-01-97zr
+   gcloud auth application-default set-quota-project <PROJECT_ID>
    ```
    Use nos dois logins a mesma conta com acesso ao projeto. Se a ADC ficar em outra conta, aparece o erro `serviceusage.services.use`.
 
 2. **Crie o `.env`:**
    ```bash
-   TABLE_NAME=batalha-time-01-97zr.hackathon_dados.extrato_sintetico
+   TABLE_NAME=<PROJECT_ID>.<DATASET>.<TABELA>
    ```
 
 3. **Instale e rode:**
@@ -79,14 +79,14 @@ push na main
 GitHub Actions (environment "production")
    │ 1. checkout do código
    │ 2. instala o gcloud
-   │ 3. autentica: troca o secret GCP_CREDENTIALS por um access token de 1h
+   │ 3. autentica via Workload Identity Federation (token OIDC → conta de deploy)
    │ 4. Cloud Build: gcloud builds submit
-   │       → imagem .../agentes/ita-backend:<sha do commit>
+   │       → imagem .../<AR_REPO>/ita-backend:<sha do commit>
    │ 5. Cloud Run: gcloud run deploy ita-backend
    │       → nova revisão recebe 100% do tráfego
    │ 6. apaga o token do runner
    ▼
-https://ita-backend-540082622758.us-central1.run.app
+https://ita-backend-<PROJECT_NUMBER>.us-central1.run.app
 ```
 
 - **Tag da imagem = SHA do commit.** Cada revisão no Cloud Run aponta para um commit exato, o que facilita rastrear e voltar versões.
@@ -100,12 +100,20 @@ O fluxo usa **duas identidades diferentes**:
 
 | Momento | Identidade | Precisa de |
 |---|---|---|
-| **Deploy** (GitHub Actions) | credencial de usuário do dono do repositório (secret `GCP_CREDENTIALS`) | Cloud Build, Artifact Registry, Cloud Run Admin, `iam.serviceAccountUser` na conta de runtime |
-| **Execução** (Cloud Run) | `squad-agent-sa@batalha-time-01-97zr.iam.gserviceaccount.com` | BigQuery (Job User e acesso à tabela) e Vertex AI User. Todos já concedidos pela organização |
+| **Deploy** (GitHub Actions) | `ita-deploy-sa`, assumida via Workload Identity Federation | Cloud Build, Artifact Registry, Cloud Run Admin, `iam.serviceAccountUser` nas contas de runtime e do Cloud Build |
+| **Execução** (Cloud Run) | `ita-runtime-sa@<PROJECT_ID>.iam.gserviceaccount.com` | Vertex AI User |
 
-**Por que o deploy usa uma credencial de usuário:** o jeito recomendado seria Workload Identity Federation ou uma conta de serviço dedicada ao deploy. Nenhum dos dois é possível neste projeto. A criação de chaves de conta de serviço está bloqueada pela política da organização (`iam.disableServiceAccountKeyCreation`), e o time não tem permissão para criar pools de identidade nem contas de serviço. Veja [Segurança e pendências](#segurança-e-pendências).
+**Como o deploy se autentica:** o GitHub gera um token OIDC para cada execução do workflow, e o Google o troca por credenciais de curta duração da `ita-deploy-sa`. Nenhuma chave nem credencial pessoal fica guardada no GitHub. O provedor de identidade só aceita tokens do repositório configurado em `GITHUB_REPO`.
 
-**Por que o serviço não usa a conta padrão:** a conta padrão do Compute (`540082622758-compute@developer.gserviceaccount.com`) não tem acesso ao BigQuery nem ao Vertex AI. O `--service-account` no workflow é obrigatório. Sem ele, os endpoints voltam a dar erro 403.
+**Configuração inicial (uma vez por projeto), no console do GCP:**
+1. Habilite as APIs do Cloud Run, Cloud Build, Artifact Registry e Vertex AI.
+2. Crie o repositório Docker no Artifact Registry (região `us-central1`), com o nome do secret `GCP_AR_REPO`.
+3. Crie as contas de serviço `ita-deploy-sa` e `ita-runtime-sa`. A de runtime recebe *Agent Platform User* (Vertex AI User) no projeto. A de deploy recebe, no projeto, *Cloud Run Admin*, *Cloud Build Editor*, *Artifact Registry Writer*, *Storage Admin* e *Service Usage Consumer*, além de *Service Account User* na conta de runtime e na conta padrão do Compute.
+4. Crie o pool de identidade (`github`) e um provedor OIDC com issuer `https://token.actions.githubusercontent.com`, mapeamento `google.subject=assertion.sub` e `attribute.repository=assertion.repository`, e condição `assertion.repository=='<usuario>/ita-backend'`.
+5. Na `ita-deploy-sa`, conceda *Workload Identity User* ao principal `principalSet://iam.googleapis.com/projects/<PROJECT_NUMBER>/locations/global/workloadIdentityPools/github/attribute.repository/<usuario>/ita-backend`.
+6. Cadastre os secrets abaixo no environment `production`.
+
+**Por que o serviço não usa a conta padrão:** a conta padrão do Compute (`<PROJECT_NUMBER>-compute@developer.gserviceaccount.com`) não tem acesso ao BigQuery nem ao Vertex AI. O `--service-account` no workflow é obrigatório. Sem ele, os endpoints voltam a dar erro 403.
 
 ### Secrets e configuração
 
@@ -113,27 +121,26 @@ O fluxo usa **duas identidades diferentes**:
 
 | Secret | Conteúdo |
 |---|---|
-| `GCP_CREDENTIALS` | O JSON de `~/.config/gcloud/application_default_credentials.json` (tipo `authorized_user`) |
+| `GCP_WIF_PROVIDER` | Nome do provedor do Workload Identity (`projects/<PROJECT_NUMBER>/locations/global/workloadIdentityPools/github/providers/github-provider`) |
+| `GCP_DEPLOY_SA` | E-mail da `ita-deploy-sa` |
+| `GCP_AR_REPO` | Nome do repositório do Artifact Registry (`<AR_REPO>`) |
+| `GCP_PROJECT_ID` | ID do projeto no Google Cloud |
+| `GCP_RUNTIME_SA` | E-mail da conta de serviço de execução (`ita-runtime-sa@<PROJECT_ID>.iam.gserviceaccount.com`) |
 
-Só a branch `main` pode usar o environment `production`. Para atualizar a credencial:
-
-```bash
-gh secret set GCP_CREDENTIALS --env production --repo kenjimattos/ita-backend \
-  < ~/.config/gcloud/application_default_credentials.json
-```
+Só a branch `main` pode usar o environment `production`. O script de setup imprime os comandos `gh secret set` para os quatro secrets.
 
 **Variáveis de ambiente do serviço**, definidas no `env:` do workflow e aplicadas com `--set-env-vars`:
 
 | Variável | Valor | Uso |
 |---|---|---|
-| `TABLE_NAME` | `batalha-time-01-97zr.hackathon_dados.extrato_sintetico` | Tabela consultada |
-| `GOOGLE_CLOUD_PROJECT` | `batalha-time-01-97zr` | Projeto do BigQuery e do Vertex AI |
+| `TABLE_NAME` | `<PROJECT_ID>.<DATASET>.<TABELA>` | Tabela consultada |
+| `GOOGLE_CLOUD_PROJECT` | `<PROJECT_ID>` | Projeto do BigQuery e do Vertex AI |
 | `GEMINI_MODEL` (opcional) | padrão `gemini-3.8-flash` | Modelo do agente |
 | `GEMINI_LOCATION` (opcional) | padrão `global` | Location do Vertex AI |
 
 O `--set-env-vars` **substitui todas** as variáveis do serviço a cada deploy. Variáveis novas devem entrar no workflow, não ser configuradas à mão no console, senão o próximo deploy as apaga.
 
-Nenhuma chave de API é necessária no Cloud Run. O Gemini é chamado pelo Vertex AI usando a conta de serviço. Se um dia precisar de um segredo em tempo de execução, use o Secret Manager com `--set-secrets` (a `squad-agent-sa` já tem `secretAccessor`) e troque o `--clear-secrets` do workflow.
+Nenhuma chave de API é necessária no Cloud Run. O Gemini é chamado pelo Vertex AI usando a conta de serviço. Se um dia precisar de um segredo em tempo de execução, use o Secret Manager com `--set-secrets` (conceda `roles/secretmanager.secretAccessor` à `ita-runtime-sa`) e troque o `--clear-secrets` do workflow.
 
 ### Como fazer um deploy
 
@@ -157,7 +164,7 @@ gcloud run services describe ita-backend --region=us-central1 \
 
 # Teste rápido
 curl -s -o /dev/null -w "%{http_code}\n" \
-  https://ita-backend-540082622758.us-central1.run.app/usuarios/001221d1-3626-45c1-807a-990502adf808/extrato
+  https://ita-backend-<PROJECT_NUMBER>.us-central1.run.app/usuarios/001221d1-3626-45c1-807a-990502adf808/extrato
 
 # Erros recentes
 gcloud logging read 'resource.type="cloud_run_revision" AND resource.labels.service_name="ita-backend" AND severity>=ERROR' \
@@ -181,11 +188,11 @@ O rollback é temporário: **o próximo push na `main` faz deploy de novo**. Par
 
 ### Deploy manual (sem GitHub Actions)
 
-Útil se o GitHub Actions estiver fora do ar ou a credencial expirar. Usa a sua sessão local do gcloud:
+Útil se o GitHub Actions estiver fora do ar. Usa a sua sessão local do gcloud:
 
 ```bash
 SHA=$(git rev-parse HEAD)
-IMAGE=us-central1-docker.pkg.dev/batalha-time-01-97zr/agentes/ita-backend:$SHA
+IMAGE=us-central1-docker.pkg.dev/<PROJECT_ID>/<AR_REPO>/ita-backend:$SHA
 
 gcloud builds submit --tag=$IMAGE
 
@@ -194,8 +201,8 @@ gcloud run deploy ita-backend \
   --region=us-central1 \
   --allow-unauthenticated \
   --max-instances=5 \
-  --service-account=squad-agent-sa@batalha-time-01-97zr.iam.gserviceaccount.com \
-  --set-env-vars=TABLE_NAME=batalha-time-01-97zr.hackathon_dados.extrato_sintetico,GOOGLE_CLOUD_PROJECT=batalha-time-01-97zr
+  --service-account=ita-runtime-sa@<PROJECT_ID>.iam.gserviceaccount.com \
+  --set-env-vars=TABLE_NAME=<PROJECT_ID>.<DATASET>.<TABELA>,GOOGLE_CLOUD_PROJECT=<PROJECT_ID>
 ```
 
 Mantenha estes parâmetros iguais aos do workflow. O que for diferente vale só até o próximo deploy automático.
@@ -206,11 +213,11 @@ Mantenha estes parâmetros iguais aos do workflow. O que for diferente vale só 
 
 | Sintoma | Causa | Solução |
 |---|---|---|
-| `403 ... bigquery.jobs.create permission` no Cloud Run | O serviço está rodando com a conta padrão do Compute | Faça o deploy com `--service-account=squad-agent-sa@...` |
+| `403` do Vertex AI no Cloud Run | O serviço está rodando com a conta padrão do Compute | Faça o deploy com `--service-account=ita-runtime-sa@...` |
 | `404 Publisher model gemini-3.8-flash was not found` | Location `us-central1`. Os modelos Gemini 3.x só estão em `global` | `GEMINI_LOCATION=global` (já é o padrão). O `.gemini.json` ainda diz `us-central1` |
 | `set-quota-project`: falta `serviceusage.services.use` | A ADC local está logada numa conta sem acesso ao projeto | Rode `gcloud auth application-default login` de novo com a conta certa |
 | `KeyError: 'TABLE_NAME'` ao rodar localmente | O `.env` não foi carregado | `uvicorn app:app --env-file .env` |
-| Workflow falha no passo "Autenticar" | A credencial do secret foi revogada ou expirou | Refaça o login da ADC e [atualize o secret](#secrets-e-configuração) |
+| Workflow falha no passo "Autenticar" | Secret errado, ou o repositório não bate com a condição do provedor | Confira `GCP_WIF_PROVIDER` e `GCP_DEPLOY_SA` e o principal do repositório na `ita-deploy-sa` |
 | Primeira chamada alguns segundos mais lenta | Cold start (~2,7 s) depois de ~15 min sem uso | Faça uma chamada de aquecimento antes de demonstrar, ou use `--min-instances=1` |
 
 ## Latência
@@ -227,8 +234,6 @@ Limitando o raciocínio (`thinking_budget`) e pedindo respostas curtas, a mesma 
 
 ## Segurança e pendências
 
-- **O deploy depende de uma credencial pessoal.** O secret `GCP_CREDENTIALS` tem acesso a tudo que o dono dessa credencial acessa no Google Cloud, não só a este projeto. Mitigações: repositório privado, environment `production` restrito à `main` e token de curta duração no runner.
-  - **Ao fim do hackathon:** revogue com `gcloud auth application-default revoke` e apague o secret no GitHub.
-  - **Pendência:** pedir aos organizadores Workload Identity Federation para o GitHub e uma conta de serviço de deploy (`run.admin`, `artifactregistry.writer`, `cloudbuild.builds.editor`, `iam.serviceAccountUser`). Depois disso, basta trocar o passo "Autenticar" por `google-github-actions/auth`.
+- **Deploy sem credencial guardada.** A autenticação usa Workload Identity Federation, restrita ao repositório, e a conta de deploy só tem as permissões do deploy. Nada precisa ser revogado ao fim do projeto além de apagar o projeto ou o pool.
 - **O endpoint é público e não tem autenticação.** Qualquer pessoa com a URL consulta o extrato de qualquer `id_usuario`, e cada chamada ao `/agente` gasta cota do Gemini. Isso é aceitável para a demonstração com dados sintéticos, mas não para dados reais.
 - O segredo `ita-backend-gcp-credentials` no Secret Manager não é usado pelo `ita-backend`. Ele existe para outro serviço do time.
